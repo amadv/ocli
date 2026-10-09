@@ -1,0 +1,48 @@
+---
+const command = 'npm install -g @amadv/ocli';
+---
+
+<section id="install" class="w-full bg-cream py-10 px-6">
+  <div class="max-w-2xl mx-auto">
+    <h2 class="font-display text-2xl font-black text-ink text-center mb-6">
+      Get started in seconds
+    </h2>
+
+    <div class="rounded-xl overflow-hidden border-[3px] border-ink/80 shadow-[0_4px_0_var(--ocli-shadow)]">
+      <div class="term-bar bg-term-panel border-b px-5 py-2.5 flex items-center gap-1.5">
+        <span class="w-3 h-3 rounded-full bg-gold/80"></span>
+        <span class="w-3 h-3 rounded-full bg-term-text/15"></span>
+        <span class="w-3 h-3 rounded-full bg-term-text/15"></span>
+        <span class="font-mono text-xs text-term-muted ml-2">terminal</span>
+      </div>
+      <div class="term-surface px-6 py-5 flex items-center justify-between gap-4">
+        <code class="block min-w-0 overflow-x-auto whitespace-nowrap font-mono text-sm md:text-base text-term-text/90 select-all">{command}</code>
+        <button
+          id="copy-btn"
+          class="shrink-0 text-term-text/30 hover:text-term-text/80 transition-colors"
+          aria-label="Copy install command"
+          type="button"
+        >
+          <svg id="icon-copy" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+          <svg id="icon-check" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="hidden text-gold"><polyline points="20 6 9 17 4 12"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  const btn = document.getElementById('copy-btn')!;
+  const iconCopy  = document.getElementById('icon-copy')!;
+  const iconCheck = document.getElementById('icon-check')!;
+
+  btn.addEventListener('click', () => {
+    navigator.clipboard.writeText('npm install -g @amadv/ocli').catch(() => {});
+    iconCopy.classList.add('hidden');
+    iconCheck.classList.remove('hidden');
+    setTimeout(() => {
+      iconCopy.classList.remove('hidden');
+      iconCheck.classList.add('hidden');
+    }, 2000);
+  });
+</script>

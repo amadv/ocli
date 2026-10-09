@@ -1,0 +1,440 @@
+import { Command } from 'commander';
+import { BitbucketClient } from './client.js';
+import { createHttpClient } from '../../lib/http.js';
+import { loadConfig } from '../../lib/config.js';
+import { getGitContext } from '../../lib/git-context.js';
+import { success, fail } from '../../lib/output.js';
+import { OcliError } from '../../lib/errors.js';
+import type { BitbucketPR } from '../../types/bitbucket.js';
+
+function getClient(
+  program: Command,
+  overrides?: { project?: string; repo?: string }
+): { client: BitbucketClient; project: string; repo: string } {
+  const opts = program.optsWithGlobals();
+  const config = loadConfig({ configPath: opts.config });
+  const http = createHttpClient(config, Boolean(opts.dryRun));
+  const client = new BitbucketClient(http);
+  const ctx = getGitContext(config);
+
+  const project: string = overrides?.project ?? opts.project ?? ctx?.project ?? config.defaults.bitbucket?.project ?? '';
+  const repo: string = overrides?.repo ?? opts.repo ?? ctx?.repo ?? config.defaults.bitbucket?.repo ?? '';
+
+  if (!project || !repo) {
+    throw new OcliError(
+      'Could not determine Bitbucket project/repo. Pass --project and --repo, or run ocli config init.',
+      1
+    );
+  }
+
+  return { client, project, repo };
+}
+
+export function registerBitbucketCommands(program: Command): void {
+  const bb = program
+    .command('bitbucket')
+    .description('Bitbucket Server operations')
+    .option('--project <key>', 'Bitbucket project key')
+    .option('--repo <slug>', 'Bitbucket repository slug');
+
+  // ── Repositories ──────────────────────────────────────────────────
+
+  bb.command('create-repo')
+    .description('Create a new repository in a project')
+    .requiredOption('--name <name>', 'Repository name (slug)')
+    .option('--description <desc>', 'Repository description')
+    .option('--project <key>', 'Bitbucket project key (overrides parent --project)')
+    .action(async (opts: { name: string; description?: string; project?: string }) => {
+      const start = Date.now();
+      try {
+        const globalOpts = bb.optsWithGlobals();
+        const config = loadConfig({ configPath: globalOpts.config });
+        const http = createHttpClient(config, Boolean(globalOpts.dryRun));
+        const client = new BitbucketClient(http);
+        const ctx = getGitContext(config);
+        const project: string = opts.project ?? globalOpts.project ?? ctx?.project ?? config.defaults.bitbucket?.project ?? '';
+        if (!project) {
+          throw new OcliError('Could not determine Bitbucket project. Pass --project, or run ocli config init.', 1);
+        }
+        const data = await client.createRepo({ project, name: opts.name, description: opts.description });
+        success(data, 'bitbucket', 'create-repo', start);
+      } catch (err) { fail(err, 'bitbucket', 'create-repo', start); }
+    });
+
+  // ── Pull Requests ──────────────────────────────────────────────────
+
+  bb.command('list-prs')
+    .description('List pull requests')
+    .option('--state <state>', 'PR state: OPEN|MERGED|DECLINED|ALL', 'OPEN')
+    .option('--author <username>', 'Filter by author username')
+    .option('--reviewer <username>', 'Filter by reviewer username')
+    .action(async (opts: { state?: string; author?: string; reviewer?: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.listPRs({ project, repo, state: opts.state, author: opts.author, reviewer: opts.reviewer });
+        success(data, 'bitbucket', 'list-prs', start);
+      } catch (err) { fail(err, 'bitbucket', 'list-prs', start); }
+    });
+
+  bb.command('get-pr')
+    .description('Get a pull request by ID')
+    .requiredOption('--id <pr-id>', 'Pull request ID')
+    .action(async (opts: { id: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.getPR(project, repo, parseInt(opts.id, 10));
+        success(data, 'bitbucket', 'get-pr', start);
+      } catch (err) { fail(err, 'bitbucket', 'get-pr', start); }
+    });
+
+  bb.command('create-pr')
+    .description('Create a pull request')
+    .requiredOption('--title <title>', 'PR title')
+    .requiredOption('--source <branch>', 'Source branch')
+    .option('--target <branch>', 'Target branch (defaults to config)')
+    .option('--description <desc>', 'PR description')
+    .option('--reviewers <users>', 'Comma-separated reviewer usernames')
+    .option('--project <key>', 'Bitbucket project key (overrides parent --project; use ~username for personal repos)')
+    .option('--repo <slug>', 'Bitbucket repository slug (overrides parent --repo)')
+    .action(async (opts: { title: string; source: string; target?: string; description?: string; reviewers?: string; project?: string; repo?: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb, { project: opts.project, repo: opts.repo });
+        const config = loadConfig({ configPath: bb.optsWithGlobals().config });
+        const target = opts.target ?? config.defaults.bitbucket?.targetBranch ?? 'main';
+        const reviewers = opts.reviewers ? opts.reviewers.split(',').map(s => s.trim()) : [];
+        const data = await client.createPR({ project, repo, title: opts.title, source: opts.source, target, description: opts.description, reviewers });
+        success(data, 'bitbucket', 'create-pr', start);
+      } catch (err) { fail(err, 'bitbucket', 'create-pr', start); }
+    });
+
+  bb.command('create-prs')
+    .description('Create pull requests for multiple repositories in a project')
+    .requiredOption('--from <branch>', 'Source branch')
+    .requiredOption('--to <branch>', 'Target branch')
+    .requiredOption('--repos <slugs>', 'Comma-separated repository slugs')
+    .option('--title <title>', 'PR title (defaults to "Promote <from> to <to>")')
+    .option('--description <desc>', 'PR description')
+    .option('--reviewers <users>', 'Comma-separated reviewer usernames')
+    .option('--project <key>', 'Bitbucket project key (overrides parent --project)')
+    .action(async (opts: { from: string; to: string; repos: string; title?: string; description?: string; reviewers?: string; project?: string }) => {
+      const start = Date.now();
+      try {
+        const globalOpts = bb.optsWithGlobals();
+        const config = loadConfig({ configPath: globalOpts.config });
+        const http = createHttpClient(config, Boolean(globalOpts.dryRun));
+        const client = new BitbucketClient(http);
+        const ctx = getGitContext(config);
+
+        const project: string = opts.project ?? globalOpts.project ?? ctx?.project ?? config.defaults.bitbucket?.project ?? '';
+        if (!project) {
+          throw new OcliError('Could not determine Bitbucket project. Pass --project, or run ocli config init.', 1);
+        }
+
+        const repos = opts.repos.split(',').map(s => s.trim()).filter(Boolean);
+        if (repos.length === 0) {
+          throw new OcliError('--repos must contain at least one repository slug', 1);
+        }
+
+        const title = opts.title ?? `Promote ${opts.from} to ${opts.to}`;
+        const reviewers = opts.reviewers ? opts.reviewers.split(',').map(s => s.trim()) : [];
+
+        type RepoResult =
+          | { repo: string; status: 'created'; pr: BitbucketPR }
+          | { repo: string; status: 'nothing_to_promote' }
+          | { repo: string; status: 'error'; error: string };
+
+        const results: RepoResult[] = [];
+        let created = 0;
+        let nothingToPromote = 0;
+        let errors = 0;
+
+        for (const repo of repos) {
+          try {
+            const hasCommits = await client.compareCommits(project, repo, opts.from, opts.to);
+            if (!hasCommits) {
+              results.push({ repo, status: 'nothing_to_promote' });
+              nothingToPromote++;
+              continue;
+            }
+            const pr = await client.createPR({ project, repo, title, source: opts.from, target: opts.to, description: opts.description, reviewers });
+            results.push({ repo, status: 'created', pr });
+            created++;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            results.push({ repo, status: 'error', error: message });
+            errors++;
+          }
+        }
+
+        success({ results, summary: { created, nothing_to_promote: nothingToPromote, error: errors } }, 'bitbucket', 'create-prs', start);
+      } catch (err) { fail(err, 'bitbucket', 'create-prs', start); }
+    });
+
+  bb.command('update-pr')
+    .description('Update a pull request')
+    .requiredOption('--id <pr-id>', 'Pull request ID')
+    .option('--title <title>', 'New title')
+    .option('--description <desc>', 'New description')
+    .option('--reviewers <users>', 'Comma-separated reviewer usernames')
+    .action(async (opts: { id: string; title?: string; description?: string; reviewers?: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const prId = parseInt(opts.id, 10);
+        const pr = await client.getPR(project, repo, prId);
+        const reviewers = opts.reviewers ? opts.reviewers.split(',').map(s => s.trim()) : undefined;
+        const data = await client.updatePR({ project, repo, id: prId, title: opts.title, description: opts.description, reviewers, version: pr.version });
+        success(data, 'bitbucket', 'update-pr', start);
+      } catch (err) { fail(err, 'bitbucket', 'update-pr', start); }
+    });
+
+  bb.command('merge-pr')
+    .description('Merge a pull request')
+    .requiredOption('--id <pr-id>', 'Pull request ID')
+    .option('--strategy <strategy>', 'Merge strategy: merge|squash|ff')
+    .option('--delete-branch', 'Delete source branch after merge')
+    .action(async (opts: { id: string; strategy?: string; deleteBranch?: boolean }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const prId = parseInt(opts.id, 10);
+        const pr = await client.getPR(project, repo, prId);
+        const data = await client.mergePR({ project, repo, id: prId, version: pr.version, strategy: opts.strategy as 'merge' | 'squash' | 'ff', deleteBranch: opts.deleteBranch });
+        success(data, 'bitbucket', 'merge-pr', start);
+      } catch (err) { fail(err, 'bitbucket', 'merge-pr', start); }
+    });
+
+  bb.command('decline-pr')
+    .description('Decline a pull request')
+    .requiredOption('--id <pr-id>', 'Pull request ID')
+    .action(async (opts: { id: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const prId = parseInt(opts.id, 10);
+        const pr = await client.getPR(project, repo, prId);
+        const data = await client.declinePR(project, repo, prId, pr.version);
+        success(data, 'bitbucket', 'decline-pr', start);
+      } catch (err) { fail(err, 'bitbucket', 'decline-pr', start); }
+    });
+
+  // ── Comments ───────────────────────────────────────────────────────
+
+  bb.command('list-comments')
+    .description('List comments on a pull request (includes threaded replies by default)')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .option('--no-with-replies', 'Exclude replies; return top-level comments only')
+    .option('--inline-only', 'Return only inline file comments')
+    .option('--general-only', 'Return only general (non-inline) PR comments')
+    .action(async (opts: { pr: string; withReplies: boolean; inlineOnly?: boolean; generalOnly?: boolean }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.listComments(project, repo, parseInt(opts.pr, 10), {
+          withReplies: opts.withReplies,
+          inlineOnly: opts.inlineOnly,
+          generalOnly: opts.generalOnly
+        });
+        success(data, 'bitbucket', 'list-comments', start);
+      } catch (err) { fail(err, 'bitbucket', 'list-comments', start); }
+    });
+
+  bb.command('add-comment')
+    .description('Add a comment to a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .requiredOption('--body <text>', 'Comment text')
+    .action(async (opts: { pr: string; body: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.addComment(project, repo, parseInt(opts.pr, 10), opts.body);
+        success(data, 'bitbucket', 'add-comment', start);
+      } catch (err) { fail(err, 'bitbucket', 'add-comment', start); }
+    });
+
+  bb.command('add-inline-comment')
+    .description('Add an inline comment to a file in a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .requiredOption('--file <path>', 'File path')
+    .requiredOption('--line <n>', 'Line number')
+    .requiredOption('--body <text>', 'Comment text')
+    .option('--line-type <type>', 'Line type: ADDED|REMOVED|CONTEXT', 'ADDED')
+    .action(async (opts: { pr: string; file: string; line: string; body: string; lineType?: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.addInlineComment({
+          project, repo,
+          prId: parseInt(opts.pr, 10),
+          text: opts.body,
+          filePath: opts.file,
+          line: parseInt(opts.line, 10),
+          lineType: opts.lineType as 'ADDED' | 'REMOVED' | 'CONTEXT'
+        });
+        success(data, 'bitbucket', 'add-inline-comment', start);
+      } catch (err) { fail(err, 'bitbucket', 'add-inline-comment', start); }
+    });
+
+  bb.command('reply-comment')
+    .description('Reply to a comment on a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .requiredOption('--comment-id <id>', 'Comment ID to reply to')
+    .requiredOption('--body <text>', 'Reply text')
+    .action(async (opts: { pr: string; commentId: string; body: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.replyComment(project, repo, parseInt(opts.pr, 10), parseInt(opts.commentId, 10), opts.body);
+        success(data, 'bitbucket', 'reply-comment', start);
+      } catch (err) { fail(err, 'bitbucket', 'reply-comment', start); }
+    });
+
+  bb.command('resolve-comment')
+    .description('Resolve a comment on a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .requiredOption('--comment-id <id>', 'Comment ID')
+    .option('--version <n>', 'Comment version', '0')
+    .action(async (opts: { pr: string; commentId: string; version?: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        await client.resolveComment(project, repo, parseInt(opts.pr, 10), parseInt(opts.commentId, 10), parseInt(opts.version ?? '0', 10));
+        success({ resolved: true }, 'bitbucket', 'resolve-comment', start);
+      } catch (err) { fail(err, 'bitbucket', 'resolve-comment', start); }
+    });
+
+  bb.command('delete-comment')
+    .description('Delete a comment on a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .requiredOption('--comment-id <id>', 'Comment ID')
+    .option('--version <n>', 'Comment version', '0')
+    .action(async (opts: { pr: string; commentId: string; version?: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        await client.deleteComment(project, repo, parseInt(opts.pr, 10), parseInt(opts.commentId, 10), parseInt(opts.version ?? '0', 10));
+        success({ deleted: true }, 'bitbucket', 'delete-comment', start);
+      } catch (err) { fail(err, 'bitbucket', 'delete-comment', start); }
+    });
+
+  // ── Diff / Files ───────────────────────────────────────────────────
+
+  bb.command('diff')
+    .description('Get unified diff for a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .option('--file <path>', 'Limit diff to a specific file')
+    .option('--context-lines <n>', 'Lines of context around changes')
+    .action(async (opts: { pr: string; file?: string; contextLines?: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const contextLines = opts.contextLines ? parseInt(opts.contextLines, 10) : undefined;
+        const diff = await client.getDiff(project, repo, parseInt(opts.pr, 10), opts.file, contextLines);
+        success({ diff }, 'bitbucket', 'diff', start);
+      } catch (err) { fail(err, 'bitbucket', 'diff', start); }
+    });
+
+  bb.command('list-files')
+    .description('List files changed in a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .action(async (opts: { pr: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.listFiles(project, repo, parseInt(opts.pr, 10));
+        success(data, 'bitbucket', 'list-files', start);
+      } catch (err) { fail(err, 'bitbucket', 'list-files', start); }
+    });
+
+  // ── Approvals ──────────────────────────────────────────────────────
+
+  bb.command('approve')
+    .description('Approve a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .action(async (opts: { pr: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.approvePR(project, repo, parseInt(opts.pr, 10));
+        success(data, 'bitbucket', 'approve', start);
+      } catch (err) { fail(err, 'bitbucket', 'approve', start); }
+    });
+
+  bb.command('unapprove')
+    .description('Remove approval from a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .action(async (opts: { pr: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.unapprovePR(project, repo, parseInt(opts.pr, 10));
+        success(data, 'bitbucket', 'unapprove', start);
+      } catch (err) { fail(err, 'bitbucket', 'unapprove', start); }
+    });
+
+  bb.command('needs-work')
+    .description('Mark a pull request as needs-work')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .action(async (opts: { pr: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.needsWorkPR(project, repo, parseInt(opts.pr, 10));
+        success(data, 'bitbucket', 'needs-work', start);
+      } catch (err) { fail(err, 'bitbucket', 'needs-work', start); }
+    });
+
+  bb.command('list-reviewers')
+    .description('List reviewers of a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .action(async (opts: { pr: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.listReviewers(project, repo, parseInt(opts.pr, 10));
+        success(data, 'bitbucket', 'list-reviewers', start);
+      } catch (err) { fail(err, 'bitbucket', 'list-reviewers', start); }
+    });
+
+  bb.command('add-reviewer')
+    .description('Add a reviewer to a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .requiredOption('--user <username>', 'Username to add as a reviewer')
+    .action(async (opts: { pr: string; user: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.addReviewer(project, repo, parseInt(opts.pr, 10), opts.user);
+        success(data, 'bitbucket', 'add-reviewer', start);
+      } catch (err) { fail(err, 'bitbucket', 'add-reviewer', start); }
+    });
+
+  // ── Build Status ───────────────────────────────────────────────────
+
+  bb.command('list-builds')
+    .description('List build statuses for a pull request')
+    .requiredOption('--pr <pr-id>', 'Pull request ID')
+    .action(async (opts: { pr: string }) => {
+      const start = Date.now();
+      try {
+        const { client, project, repo } = getClient(bb);
+        const data = await client.listBuilds(project, repo, parseInt(opts.pr, 10));
+        success(data, 'bitbucket', 'list-builds', start);
+      } catch (err) { fail(err, 'bitbucket', 'list-builds', start); }
+    });
+
+  bb.command('get-build-status')
+    .description('Get build status for a commit SHA')
+    .requiredOption('--commit <sha>', 'Commit SHA')
+    .action(async (opts: { commit: string }) => {
+      const start = Date.now();
+      try {
+        const { client } = getClient(bb);
+        const data = await client.getBuildStatus(opts.commit);
+        success(data, 'bitbucket', 'get-build-status', start);
+      } catch (err) { fail(err, 'bitbucket', 'get-build-status', start); }
+    });
+}

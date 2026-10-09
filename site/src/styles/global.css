@@ -1,0 +1,218 @@
+@import '@fontsource-variable/fraunces';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+@import 'tailwindcss';
+@plugin "@tailwindcss/typography";
+
+/*
+ * Two-theme palette. Light is the default; `html[data-theme="dark"]` overrides
+ * the `--color-*` custom properties and flips the site back to the original
+ * charcoal "office" look.
+ *
+ * NOTE: the theme block is deliberately NOT `@theme inline`. Inline would bake
+ * `var(--...-cream)` into every utility, which breaks Tailwind's opacity
+ * modifiers — `bg-cream/60` would render fully opaque. With plain `@theme`,
+ * Tailwind emits `var(--color-cream)` for solid colors and
+ * `color-mix(in srgb, #ffffff 60%, transparent)` (upgraded to
+ * `color-mix(in oklab, var(--color-cream) 60%, transparent)` where supported)
+ * for `/N` opacity — so both the base color and its alpha follow the theme.
+ *
+ * The values in `@theme` are the LIGHT theme's; `html[data-theme="dark"]` below
+ * redefines the same names. Token names are historical (kept so the ~300
+ * existing `bg-cream` / `text-ink` / `text-gold` utilities keep working):
+ *   cream  → page surface      light: white        dark: charcoal
+ *   ink    → body text         light: near-black   dark: cream
+ *   panel  → raised surface    light: pale gray    dark: raised charcoal
+ *   gold   → the accent        light: blue         dark: signal gold
+ *   straw  → accent companion  light: light blue   dark: straw highlight
+ *   chrome → muted metadata    light: slate gray   dark: chrome grey
+ *   coral  → alerts / "fix"     both: warm red (alerts read the same in both)
+ *
+ * Terminal chrome (code blocks, mock terminals) is intentionally dark in both
+ * themes, and the homepage's two "case file" bands are permanently dark — see
+ * the --color-term-* and --color-on-dark-* tokens below.
+ */
+@theme {
+  --color-cream: #ffffff;
+  --color-ink: #16181d;
+  --color-panel: #f3f5f9;
+  --color-gold: #1d4ed8;
+  --color-straw: #7fa4ee;
+  --color-chrome: #5b6472;
+  --color-coral: #d0472e;
+
+  /*
+   * Always-dark surfaces, shared by both themes (never overridden). `term-*`
+   * are the neutral chrome; `on-dark-*` are the accents used inside the
+   * permanently-dark homepage bands, where the theme accent would be unreadable.
+   */
+  --color-term: #1e1e20;
+  --color-term-panel: #242428;
+  --color-term-border: #3a3a40;
+  --color-term-text: #f2ead9;
+  --color-term-muted: #8a8f98;
+  --color-on-dark-body: #b9b2a4;
+  --color-on-dark-gold: #d9b84f;
+  --color-on-dark-straw: #ece0a8;
+
+  --font-display: "Fraunces Variable", Georgia, 'Times New Roman', serif;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "Courier New", monospace;
+}
+
+/*
+ * Per-theme knobs (grain alpha, sticker shadow color) plus the base
+ * color-scheme. Not Tailwind tokens — plain custom properties.
+ */
+:root {
+  color-scheme: light;
+  --ocli-grain: 0.05;
+  --ocli-shadow: 0 0 0 rgb(15 23 42 / 0.18);
+}
+
+/* ── Dark theme (the original charcoal "Context Overflow" look) ─────────── */
+html[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-cream: #1e1e20;
+  --color-ink: #f2ead9;
+  --color-panel: #242428;
+  --color-gold: #d9b84f;
+  --color-straw: #ece0a8;
+  --color-chrome: #8a8f98;
+  --color-coral: #e0765a;
+
+  --ocli-grain: 0.028;
+  --ocli-shadow: 0 0 0 rgb(0 0 0 / 0.4);
+}
+
+/*
+ * Typography plugin palette. The docs pages use `prose prose-neutral` with
+ * per-element `prose-*:text-ink/*` overrides, but anything not explicitly
+ * overridden (table cells, list markers, blockquotes, hr, captions) would fall
+ * back to prose-neutral's fixed grays. Redefining the plugin's CSS variables in
+ * terms of the theme tokens fixes every prose element at the source.
+ */
+.prose {
+  --tw-prose-body: color-mix(in srgb, var(--color-ink) 78%, transparent);
+  --tw-prose-headings: var(--color-ink);
+  --tw-prose-lead: color-mix(in srgb, var(--color-ink) 78%, transparent);
+  --tw-prose-links: var(--color-gold);
+  --tw-prose-bold: var(--color-ink);
+  --tw-prose-counters: color-mix(in srgb, var(--color-ink) 55%, transparent);
+  --tw-prose-bullets: color-mix(in srgb, var(--color-ink) 38%, transparent);
+  --tw-prose-hr: color-mix(in srgb, var(--color-ink) 15%, transparent);
+  --tw-prose-quotes: color-mix(in srgb, var(--color-ink) 85%, transparent);
+  --tw-prose-quote-borders: color-mix(in srgb, var(--color-gold) 50%, transparent);
+  --tw-prose-captions: color-mix(in srgb, var(--color-ink) 55%, transparent);
+  --tw-prose-code: var(--color-ink);
+  --tw-prose-th-borders: color-mix(in srgb, var(--color-ink) 30%, transparent);
+  --tw-prose-td-borders: color-mix(in srgb, var(--color-ink) 12%, transparent);
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-cream);
+  color: var(--color-ink);
+  /* Institutional grain — faint halftone dots, like a photocopied memo */
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--color-ink) calc(var(--ocli-grain) * 100%), transparent) 1px,
+    transparent 1px
+  );
+  background-size: 5px 5px;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+::selection {
+  background-color: var(--color-gold);
+  color: var(--color-cream);
+}
+
+/* Fraunces: crank the optical size axis so display sizes get the sharp serifs */
+.font-display {
+  font-variation-settings: 'opsz' 132;
+}
+
+/* Hard offset text-shadow on big display type — printed-poster feel */
+.headline-shadow,
+.headline-shadow-dark {
+  text-shadow: 3px 3px 0 var(--ocli-shadow);
+}
+
+/*
+ * Sticker buttons — chunky outline, hard offset drop shadow, hover lift.
+ * border-color rides the ink token: dark outline on a light page, cream outline on charcoal.
+ */
+.btn-sticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  border: 3px solid var(--color-ink);
+  border-radius: 14px;
+  box-shadow: 0 4px 0 var(--ocli-shadow);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.btn-sticker:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 var(--ocli-shadow);
+}
+.btn-sticker:active {
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--ocli-shadow);
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn-sticker,
+  .btn-sticker:hover,
+  .btn-sticker:active {
+    transition: none;
+    transform: none;
+  }
+}
+
+/*
+ * Shiki code blocks: prose `prose-code:*` utilities must never clobber the
+ * highlighter's colors. Shiki sets the block foreground inline on <pre>, and
+ * tokenized spans carry their own inline colors — so code inside pre must
+ * simply inherit. (Unlayered, so it wins over Tailwind's utility layer.)
+ *
+ * The hairline border matters in dark mode, where the fixed terminal surface
+ * (#1e1e20) is the same value as the dark page background — without it, code
+ * blocks would be invisible as blocks.
+ */
+.prose pre {
+  border: 1px solid var(--color-term-border);
+}
+.prose pre code {
+  color: inherit;
+  background-color: transparent;
+  padding: 0;
+}
+
+/*
+ * Always-dark terminal surfaces. Both themes render code blocks and mock
+ * terminals on charcoal, so the tokens are fixed — only the utility names
+ * change, keeping markup free of raw hex values.
+ */
+.term-surface {
+  background-color: var(--color-term);
+  color: var(--color-term-text);
+}
+.term-bar {
+  background-color: var(--color-term-panel);
+  border-color: var(--color-term-border);
+}
+
+/* Rubber-stamp chip — mono, uppercase, bordered in currentColor, slightly askew */
+.stamp {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  border: 2px solid currentColor;
+  border-radius: 6px;
+  padding: 0.2rem 0.55rem;
+  transform: rotate(-2deg);
+}

@@ -1,0 +1,26 @@
+---
+const href = '/ocli/commands/';
+---
+
+<aside class="not-prose my-8 rounded-xl border-2 border-gold/50 bg-panel p-5 flex gap-4">
+  <div class="shrink-0 mt-0.5 text-gold">
+    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+         stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 17l6-6-6-6"/>
+      <path d="M12 19h8"/>
+    </svg>
+  </div>
+  <div class="flex-1">
+    <p class="font-display font-bold text-ink text-base mb-1">Full command reference</p>
+    <p class="text-sm text-ink/60 mb-3">
+      Every command, flag, and option — auto-generated from source and always up to date.
+    </p>
+    <a
+      href={href}
+      class="inline-flex items-center gap-1.5 text-sm font-semibold text-gold hover:underline"
+    >
+      View command reference →
+    </a>
+  </div>
+</aside>

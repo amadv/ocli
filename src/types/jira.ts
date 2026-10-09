@@ -1,0 +1,108 @@
+// Phase 3 — Jira Data Cloud types
+
+export type CustomFieldType =
+  | 'string'
+  | 'number'
+  | 'date'
+  | 'datetime'
+  | 'select'
+  | 'multi-select'
+  | 'option-id'
+  | 'cascading-select'
+  | 'user'
+  | 'labels'
+  | 'url'
+  | 'textarea';
+
+export interface CustomFieldDefinition {
+  id: string;
+  name: string;
+  type: CustomFieldType;
+  description?: string;
+  examples?: string[];
+}
+
+export interface CustomFieldMap {
+  byName: Map<string, CustomFieldDefinition>;
+  byId: Map<string, CustomFieldDefinition>;
+}
+
+export interface JiraUser {
+  name: string;
+  displayName: string;
+}
+
+export interface JiraFieldInfo {
+  id: string;
+  name: string;
+  custom: boolean;
+  schema?: { type: string; custom?: string };
+  allowedValues?: Array<{ id: string; value?: string; name?: string; children?: Array<{ id: string; value: string }> }>;
+  /** Suggested ocli config type inferred from the Jira field schema. */
+  ocliType?: CustomFieldType;
+}
+
+export interface JiraIssue {
+  id: string;
+  key: string;
+  fields: {
+    summary: string;
+    description?: unknown;
+    status: { name: string };
+    priority?: { name: string };
+    assignee?: JiraUser | null;
+    reporter?: JiraUser;
+    labels?: string[];
+    issuetype: { name: string };
+    project: { key: string; name: string };
+    created: string;
+    updated: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface JiraTransition {
+  id: string;
+  name: string;
+  to: { name: string };
+}
+
+export interface JiraComment {
+  id: string;
+  author: JiraUser;
+  body: unknown;
+  created: string;
+  updated: string;
+}
+
+export interface JiraSearchResult {
+  issues: JiraIssue[];
+  total: number;
+  startAt: number;
+  maxResults: number;
+}
+
+export interface JiraAttachment {
+  id: string;
+  filename: string;
+  author: JiraUser;
+  created: string;
+  size: number;
+  mimeType: string;
+  content: string;
+}
+
+export interface JiraBoard {
+  id: number;
+  name: string;
+  type: string;
+}
+
+export interface JiraSprint {
+  id: number;
+  name: string;
+  state: string;
+  startDate?: string;
+  endDate?: string;
+  goal?: string;
+}

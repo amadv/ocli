@@ -1,0 +1,29 @@
+.superset/
+node_modules/
+dist/
+publish/
+deploy.zip
+*.js.map
+.ocli/
+.env
+.envrc
+*.local
+.claude/settings.local.json
+scheduled_tasks.lock
+
+# Astro site
+site/.astro/
+site/src/content/changelog/
+site/src/content/docs/
+site/src/content/skills/
+site/public/llms.txt
+
+# Azure Function
+functions/feedback/bin/
+functions/feedback/obj/
+functions/feedback/local.settings.json
+functions/feedback.tests/bin/
+functions/feedback.tests/obj/
+
+# Image generation working folders (prompt records + multi-MB masters)
+.claude/image-generation/

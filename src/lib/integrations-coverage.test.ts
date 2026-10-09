@@ -1,0 +1,154 @@
+import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  parseIntegrations,
+  parseRemovedIntegrations,
+  renderServicesBlock,
+  SERVICES_START_MARKER,
+  SERVICES_END_MARKER,
+} from './readme-sync.js';
+
+/**
+ * The homepage service grid (site/src/lib/integrations.ts) is the public
+ * inventory of what ocli talks to. A service that ships without a panel is a
+ * service nobody knows exists, so this test pins the two lists together.
+ *
+ * Both files are read as text rather than imported: integrations.ts lives
+ * outside src/ and importing it would drag site sources into the CLI's
+ * TypeScript program.
+ */
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+
+/** Commands that are ocli's own tooling, not an integration with an external service. */
+const NOT_AN_INTEGRATION = new Set(['config', 'doctor', 'skills', 'jwt']);
+
+function cliServiceSlugs(): string[] {
+  const cli = fs.readFileSync(path.join(repoRoot, 'src/cli.ts'), 'utf8');
+  const block = cli.match(/Services:\n([\s\S]*?)\n`\);/);
+  if (!block) throw new Error('Could not find the "Services:" help block in src/cli.ts');
+  return block[1]
+    .split('\n')
+    .map((line) => line.match(/^ {2}(\S+)\s{2,}\S/)?.[1])
+    .filter((slug): slug is string => !!slug && !NOT_AN_INTEGRATION.has(slug));
+}
+
+function gridEntries(): { slug: string; testing: string }[] {
+  const src = fs.readFileSync(path.join(repoRoot, 'site/src/lib/integrations.ts'), 'utf8');
+  const list = src.match(/export const integrations: Integration\[\] = \[([\s\S]*?)\n\];/);
+  if (!list) throw new Error('Could not find the integrations array in site/src/lib/integrations.ts');
+  return Array.from(list[1].matchAll(/slug: '([^']+)'[\s\S]*?testing: '([^']+)'/g)).map((m) => ({
+    slug: m[1],
+    testing: m[2],
+  }));
+}
+
+/** Top-level command prefixes wired into the site's generated command reference. */
+function commandReferencePrefixes(): string[] {
+  const src = fs.readFileSync(path.join(repoRoot, 'site/scripts/parse-commands.mjs'), 'utf8');
+  const list = src.match(/const SERVICES = \[([\s\S]*?)\n\];/);
+  if (!list) throw new Error('Could not find the SERVICES array in site/scripts/parse-commands.mjs');
+  const skipped = src.match(/const SKIP_PREFIXES = new Set\(\[([\s\S]*?)\]\)/);
+  const skip = new Set(Array.from(skipped?.[1].matchAll(/'([^']+)'/g) ?? []).map((m) => m[1]));
+  return Array.from(list[1].matchAll(/prefix: '([^']+)'/g))
+    .map((m) => m[1].split(' ')[0])
+    .filter((prefix) => !skip.has(prefix));
+}
+
+describe('site service grid covers every integration', () => {
+  it('has a panel for every service registered in the CLI', () => {
+    const gridSlugs = gridEntries().map((e) => e.slug);
+    const missing = cliServiceSlugs().filter((slug) => !gridSlugs.includes(slug));
+    expect(
+      missing,
+      `Add a panel to site/src/lib/integrations.ts for: ${missing.join(', ')} (new ones start at testing: 'untested')`
+    ).toEqual([]);
+  });
+
+  it('does not list panels for services the CLI no longer registers', () => {
+    const cliSlugs = cliServiceSlugs();
+    const stale = gridEntries()
+      .map((e) => e.slug)
+      .filter((slug) => !cliSlugs.includes(slug));
+    expect(stale, `Remove these from site/src/lib/integrations.ts: ${stale.join(', ')}`).toEqual([]);
+  });
+
+  it('uses only known testing levels', () => {
+    const levels = new Set(['untested', 'basic', 'beta', 'live']);
+    const bad = gridEntries().filter((e) => !levels.has(e.testing));
+    expect(bad).toEqual([]);
+  });
+
+  it('lists no duplicate slugs', () => {
+    const slugs = gridEntries().map((e) => e.slug);
+    expect(slugs).toEqual(Array.from(new Set(slugs)));
+  });
+
+  it('renders sorted by maturity so the most-validated integrations lead', () => {
+    const grid = fs.readFileSync(
+      path.join(repoRoot, 'site/src/components/ServiceGrid.astro'),
+      'utf8'
+    );
+    // Rendering the raw array again would silently restore declaration order
+    expect(grid).toContain('integrationsByMaturity()');
+    expect(grid).not.toMatch(/\{\s*integrations\.map/);
+  });
+});
+
+describe('README services table stays in sync with the site grid', () => {
+  const readme = () => fs.readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
+  const integrationsSource = () =>
+    fs.readFileSync(path.join(repoRoot, 'site/src/lib/integrations.ts'), 'utf8');
+
+  it('keeps the generated-table markers in place', () => {
+    expect(readme()).toContain(SERVICES_START_MARKER);
+    expect(readme()).toContain(SERVICES_END_MARKER);
+  });
+
+  it('matches a fresh render from site/src/lib/integrations.ts', () => {
+    const content = readme();
+    const start = content.indexOf(SERVICES_START_MARKER) + SERVICES_START_MARKER.length;
+    const end = content.indexOf(SERVICES_END_MARKER);
+    const committed = content.slice(start, end).trim();
+    const source = integrationsSource();
+    const expected = renderServicesBlock(
+      parseIntegrations(source),
+      parseRemovedIntegrations(source)
+    ).trim();
+    expect(
+      committed,
+      'README.md services table is out of date — run `npm run sync-readme` and commit the result'
+    ).toEqual(expected);
+  });
+
+  it('parses every grid entry (regex kept in step with the integrations array shape)', () => {
+    expect(parseIntegrations(integrationsSource()).map((e) => e.slug)).toEqual(
+      gridEntries().map((e) => e.slug)
+    );
+  });
+
+  it('parses the removed integrations (the removal notice must not vanish silently)', () => {
+    // parseRemovedIntegrations throws when its entry regex drops an entry, so
+    // this only needs to prove the known removals actually parse.
+    expect(parseRemovedIntegrations(integrationsSource()).length).toBeGreaterThan(0);
+  });
+});
+
+describe('site command reference covers every service', () => {
+  it('documents every service registered in the CLI', () => {
+    const documented = commandReferencePrefixes();
+    const missing = cliServiceSlugs().filter((slug) => !documented.includes(slug));
+    expect(
+      missing,
+      `Add an entry to the SERVICES array in site/scripts/parse-commands.mjs for: ${missing.join(', ')}`
+    ).toEqual([]);
+  });
+
+  it('documents no service the CLI no longer registers', () => {
+    const cliSlugs = new Set([...cliServiceSlugs(), ...NOT_AN_INTEGRATION]);
+    const stale = commandReferencePrefixes().filter((prefix) => !cliSlugs.has(prefix));
+    expect(stale, `Remove these from site/scripts/parse-commands.mjs: ${stale.join(', ')}`).toEqual([]);
+  });
+});

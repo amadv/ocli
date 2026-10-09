@@ -1,0 +1,62 @@
+---
+import { Image } from 'astro:assets';
+import logoDark from '../assets/logo-dark.png';
+
+const path = Astro.url.pathname;
+const isActive = (prefix: string) => path === prefix || path.startsWith(prefix + '/') || (prefix !== '/ocli/' && path.startsWith(prefix));
+const linkClass = (prefix: string) =>
+  `font-mono text-sm transition-colors ${isActive(prefix) ? 'text-gold font-semibold' : 'text-ink/60 hover:text-ink'}`;
+---
+
+<nav class="w-full px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 bg-cream">
+  <a href="/ocli/" class="flex items-center no-underline shrink-0">
+    <Image src={logoDark} alt="ocli" width={400} class="h-16 md:h-20 w-auto" />
+  </a>
+  <div class="flex flex-wrap items-center justify-end gap-x-4 gap-y-2 sm:gap-x-6">
+    <a href="/ocli/getting-started/" class={linkClass('/ocli/getting-started')}>Docs</a>
+    <a href="/ocli/ci/"              class={linkClass('/ocli/ci')}>CI</a>
+    <a href="/ocli/changelog/"       class={linkClass('/ocli/changelog')}>Changelog</a>
+    <a href="/ocli/feedback/"        class={linkClass('/ocli/feedback')}>Feedback</a>
+    <button
+      id="theme-toggle"
+      type="button"
+      class="inline-flex items-center justify-center w-8 h-8 rounded-full border-2 border-ink/20 text-ink/70 hover:text-ink hover:border-ink/50 transition-colors"
+      aria-label="Toggle color theme"
+      title="Toggle color theme"
+    >
+      <!-- Sun: shown in dark mode (click to go light) -->
+      <svg class="theme-icon-sun hidden" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
+      </svg>
+      <!-- Moon: shown in light mode (click to go dark) -->
+      <svg class="theme-icon-moon hidden" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+      </svg>
+    </button>
+  </div>
+</nav>
+
+<script>
+  const toggle = document.getElementById('theme-toggle');
+  const sun = toggle?.querySelector('.theme-icon-sun');
+  const moon = toggle?.querySelector('.theme-icon-moon');
+
+  function syncIcons() {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    sun?.classList.toggle('hidden', !dark);
+    moon?.classList.toggle('hidden', dark);
+  }
+
+  syncIcons();
+
+  toggle?.addEventListener('click', () => {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    try {
+      localStorage.setItem('ocli-theme', next);
+    } catch {
+      /* storage unavailable — theme still applies for this page view */
+    }
+    syncIcons();
+  });
+</script>

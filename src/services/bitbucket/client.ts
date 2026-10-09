@@ -1,0 +1,384 @@
+import type { HttpClient } from '../../lib/http.js';
+import { OcliError } from '../../lib/errors.js';
+import type {
+  BitbucketPR,
+  BitbucketUser,
+  BitbucketComment,
+  BitbucketPageResponse,
+  BitbucketBuildStatus,
+  BitbucketRepo
+} from '../../types/bitbucket.js';
+
+const API = '/rest/api/1.0';
+
+export interface ListPRsOpts {
+  project: string;
+  repo: string;
+  state?: string;
+  author?: string;
+  reviewer?: string;
+}
+
+export interface CreatePROpts {
+  project: string;
+  repo: string;
+  title: string;
+  source: string;
+  target: string;
+  description?: string;
+  reviewers?: string[];
+}
+
+export interface UpdatePROpts {
+  project: string;
+  repo: string;
+  id: number;
+  title?: string;
+  description?: string;
+  reviewers?: string[];
+  version: number;
+}
+
+export interface MergePROpts {
+  project: string;
+  repo: string;
+  id: number;
+  version: number;
+  strategy?: 'merge' | 'squash' | 'ff';
+  deleteBranch?: boolean;
+}
+
+export interface InlineCommentOpts {
+  project: string;
+  repo: string;
+  prId: number;
+  text: string;
+  filePath: string;
+  line: number;
+  lineType?: 'ADDED' | 'REMOVED' | 'CONTEXT';
+}
+
+export interface CreateRepoOpts {
+  project: string;
+  name: string;
+  description?: string;
+}
+
+export class BitbucketClient {
+  constructor(private http: HttpClient) {}
+
+  async listPRs(opts: ListPRsOpts): Promise<BitbucketPR[]> {
+    return this.http.paginate<BitbucketPR>((start, limit) =>
+      this.http.bitbucket<BitbucketPageResponse<BitbucketPR>>(
+        `${API}/projects/${opts.project}/repos/${opts.repo}/pull-requests`,
+        {
+          params: {
+            state: opts.state ?? 'OPEN',
+            ...(opts.author ? { 'author.username': opts.author } : {}),
+            start,
+            limit
+          }
+        }
+      )
+    );
+  }
+
+  async getPR(project: string, repo: string, id: number): Promise<BitbucketPR> {
+    return this.http.bitbucket<BitbucketPR>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${id}`
+    );
+  }
+
+  async createPR(opts: CreatePROpts): Promise<BitbucketPR> {
+    return this.http.bitbucket<BitbucketPR>(
+      `${API}/projects/${opts.project}/repos/${opts.repo}/pull-requests`,
+      {
+        method: 'POST',
+        body: {
+          title: opts.title,
+          description: opts.description,
+          fromRef: {
+            id: `refs/heads/${opts.source}`,
+            repository: {
+              slug: opts.repo,
+              project: { key: opts.project }
+            }
+          },
+          toRef: {
+            id: `refs/heads/${opts.target}`,
+            repository: {
+              slug: opts.repo,
+              project: { key: opts.project }
+            }
+          },
+          reviewers: (opts.reviewers ?? []).map(slug => ({ user: { slug } }))
+        }
+      }
+    );
+  }
+
+  async updatePR(opts: UpdatePROpts): Promise<BitbucketPR> {
+    const body: Record<string, unknown> = { version: opts.version };
+    if (opts.title) body.title = opts.title;
+    if (opts.description !== undefined) body.description = opts.description;
+    if (opts.reviewers) body.reviewers = opts.reviewers.map(slug => ({ user: { slug } }));
+
+    return this.http.bitbucket<BitbucketPR>(
+      `${API}/projects/${opts.project}/repos/${opts.repo}/pull-requests/${opts.id}`,
+      { method: 'PUT', body }
+    );
+  }
+
+  async mergePR(opts: MergePROpts): Promise<BitbucketPR> {
+    const params: Record<string, string | number | boolean | undefined> = {
+      version: opts.version
+    };
+    const body: Record<string, unknown> = {};
+    if (opts.strategy) body.strategyId = opts.strategy;
+    if (opts.deleteBranch) body.autoSubject = true;
+
+    return this.http.bitbucket<BitbucketPR>(
+      `${API}/projects/${opts.project}/repos/${opts.repo}/pull-requests/${opts.id}/merge`,
+      { method: 'POST', params, body }
+    );
+  }
+
+  async declinePR(project: string, repo: string, id: number, version: number): Promise<BitbucketPR> {
+    return this.http.bitbucket<BitbucketPR>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${id}/decline`,
+      { method: 'POST', params: { version } }
+    );
+  }
+
+  async listComments(
+    project: string,
+    repo: string,
+    prId: number,
+    opts: { withReplies?: boolean; inlineOnly?: boolean; generalOnly?: boolean } = {}
+  ): Promise<BitbucketComment[]> {
+    const { withReplies = true, inlineOnly = false, generalOnly = false } = opts;
+
+    interface Activity { action: string; comment?: BitbucketComment }
+    const activities = await this.http.paginate<Activity>((start, limit) =>
+      this.http.bitbucket<BitbucketPageResponse<Activity>>(
+        `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/activities`,
+        { params: { start, limit } }
+      )
+    );
+
+    const topLevel = activities
+      .filter(a => a.action === 'COMMENTED' && a.comment)
+      .map(a => a.comment!);
+
+    if (!withReplies) {
+      return topLevel
+        .filter(c => !inlineOnly || !!c.anchor)
+        .filter(c => !generalOnly || !c.anchor);
+    }
+
+    // Recursively flatten nested replies, tagging each with its parentId
+    function flatten(comment: BitbucketComment, parentId?: number): BitbucketComment[] {
+      const node: BitbucketComment = {
+        ...comment,
+        comments: undefined,
+        ...(parentId !== undefined ? { parentId } : {})
+      };
+      const replies = (comment.comments ?? []).flatMap(c => flatten(c, comment.id));
+      return [node, ...replies];
+    }
+
+    const flat = topLevel.flatMap(c => flatten(c));
+    return flat
+      .filter(c => !inlineOnly || !!c.anchor)
+      .filter(c => !generalOnly || !c.anchor)
+      .sort((a, b) => a.createdDate - b.createdDate);
+  }
+
+  async addComment(project: string, repo: string, prId: number, text: string): Promise<BitbucketComment> {
+    return this.http.bitbucket<BitbucketComment>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/comments`,
+      { method: 'POST', body: { text } }
+    );
+  }
+
+  async addInlineComment(opts: InlineCommentOpts): Promise<BitbucketComment> {
+    return this.http.bitbucket<BitbucketComment>(
+      `${API}/projects/${opts.project}/repos/${opts.repo}/pull-requests/${opts.prId}/comments`,
+      {
+        method: 'POST',
+        body: {
+          text: opts.text,
+          anchor: {
+            line: opts.line,
+            lineType: opts.lineType ?? 'ADDED',
+            fileType: 'TO',
+            path: opts.filePath
+          }
+        }
+      }
+    );
+  }
+
+  async replyComment(project: string, repo: string, prId: number, commentId: number, text: string): Promise<BitbucketComment> {
+    return this.http.bitbucket<BitbucketComment>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/comments`,
+      { method: 'POST', body: { text, parent: { id: commentId } } }
+    );
+  }
+
+  async resolveComment(project: string, repo: string, prId: number, commentId: number, version: number): Promise<void> {
+    await this.http.bitbucket<void>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/comments/${commentId}/resolve`,
+      { method: 'PUT', params: { version } }
+    );
+  }
+
+  async deleteComment(project: string, repo: string, prId: number, commentId: number, version: number): Promise<void> {
+    await this.http.bitbucket<void>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/comments/${commentId}`,
+      { method: 'DELETE', params: { version } }
+    );
+  }
+
+  async getDiff(project: string, repo: string, prId: number, file?: string, contextLines?: number): Promise<string> {
+    const params: Record<string, string | number | boolean | undefined> = {};
+    if (contextLines !== undefined) params.contextLines = contextLines;
+
+    // Bitbucket Server scopes the diff to a specific file via a URL path segment,
+    // not a query parameter: /diff/{filepath}
+    const diffPath = file
+      ? `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/diff/${file}`
+      : `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/diff`;
+
+    const result = await this.http.bitbucket<{ diffs?: unknown[] } | string>(
+      diffPath,
+      { params }
+    );
+    // Return raw diff as string
+    return typeof result === 'string' ? result : JSON.stringify(result);
+  }
+
+  async listFiles(project: string, repo: string, prId: number): Promise<string[]> {
+    const result = await this.http.bitbucket<{ values?: Array<{ path: { toString: string } }> }>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/changes`,
+      { params: { limit: 1000 } }
+    );
+    return (result.values ?? []).map(v => (typeof v.path === 'string' ? v.path : JSON.stringify(v.path)));
+  }
+
+  async getCurrentUser(): Promise<BitbucketUser> {
+    // GET /rest/api/1.0/application-properties is a lightweight endpoint present on all
+    // Bitbucket Server versions. Every authenticated REST response sets X-AUSERNAME to
+    // the caller's username, which is more reliable than GET /plugins/servlet/applinks/whoami
+    // — that endpoint returns an empty body for PAT/Bearer-token requests on some instances
+    // (e.g. Bitbucket Server v9.4.16), causing a mis-resolved user lookup.
+    const { headers } = await this.http.bitbucketRaw<{ version?: string }>(
+      `${API}/application-properties`
+    );
+    const username = headers.get('x-ausername');
+    if (!username) {
+      throw new OcliError(
+        'Could not determine current Bitbucket user: X-AUSERNAME header was absent from the server response',
+        1,
+        `${API}/application-properties`
+      );
+    }
+    return this.http.bitbucket<BitbucketUser>(`${API}/users/${encodeURIComponent(username)}`);
+  }
+
+  async approvePR(project: string, repo: string, prId: number): Promise<unknown> {
+    // POST /approve is the dedicated endpoint — no user slug required, and Bitbucket
+    // Server auto-promotes the caller to reviewer if they aren't one already.
+    return this.http.bitbucket<unknown>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/approve`,
+      { method: 'POST' }
+    );
+  }
+
+  async unapprovePR(project: string, repo: string, prId: number): Promise<unknown> {
+    return this.http.bitbucket<unknown>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/approve`,
+      { method: 'DELETE' }
+    );
+  }
+
+  async needsWorkPR(project: string, repo: string, prId: number): Promise<unknown> {
+    // Bitbucket Server only allows reviewers to set NEEDS_WORK — unlike APPROVED, which
+    // auto-promotes the caller to reviewer, NEEDS_WORK returns 403 for non-reviewers.
+    // Resolve the current user and the PR in parallel, auto-add the user as a reviewer
+    // if they aren't already, then mark needs-work using the resolved slug.
+    const [currentUser, pr] = await Promise.all([
+      this.getCurrentUser(),
+      this.getPR(project, repo, prId),
+    ]);
+
+    const isReviewer = pr.reviewers.some(r => r.user.slug === currentUser.slug);
+    if (!isReviewer) {
+      await this.http.bitbucket<unknown>(
+        `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/participants`,
+        { method: 'POST', body: { user: { name: currentUser.name }, role: 'REVIEWER' } }
+      );
+    }
+
+    return this.http.bitbucket<unknown>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/participants/${currentUser.slug}`,
+      { method: 'PUT', body: { status: 'NEEDS_WORK' } }
+    );
+  }
+
+  async listReviewers(project: string, repo: string, prId: number): Promise<unknown[]> {
+    const pr = await this.getPR(project, repo, prId);
+    return pr.reviewers;
+  }
+
+  async addReviewer(project: string, repo: string, prId: number, username: string): Promise<unknown> {
+    return this.http.bitbucket<unknown>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/participants`,
+      { method: 'POST', body: { user: { name: username }, role: 'REVIEWER' } }
+    );
+  }
+
+  async listBuilds(project: string, repo: string, prId: number): Promise<BitbucketBuildStatus[]> {
+    // Get the latest commit on the source branch
+    const commits = await this.http.bitbucket<BitbucketPageResponse<{ id: string }>>(
+      `${API}/projects/${project}/repos/${repo}/pull-requests/${prId}/commits`,
+      { params: { limit: 1 } }
+    );
+    const sha = commits.values[0]?.id;
+    if (!sha) return [];
+    return this.getBuildStatus(sha);
+  }
+
+  async getBuildStatus(commit: string): Promise<BitbucketBuildStatus[]> {
+    const result = await this.http.bitbucket<BitbucketPageResponse<BitbucketBuildStatus>>(
+      `/rest/build-status/1.0/commits/${commit}`
+    );
+    return result.values ?? [];
+  }
+
+  async createRepo(opts: CreateRepoOpts): Promise<BitbucketRepo> {
+    return this.http.bitbucket<BitbucketRepo>(
+      `${API}/projects/${opts.project}/repos`,
+      {
+        method: 'POST',
+        body: {
+          name: opts.name,
+          scmId: 'git',
+          ...(opts.description !== undefined ? { description: opts.description } : {})
+        }
+      }
+    );
+  }
+
+  /**
+   * Returns true if `from` has commits not yet in `to` (i.e. there is something
+   * to promote), false if the branches are at the same point.
+   */
+  async compareCommits(project: string, repo: string, from: string, to: string): Promise<boolean> {
+    const result = await this.http.bitbucket<BitbucketPageResponse<{ id: string }>>(
+      `${API}/projects/${project}/repos/${repo}/commits`,
+      { params: { until: from, since: to, limit: 1 } }
+    );
+    return (result.values?.length ?? 0) > 0;
+  }
+}

@@ -1,0 +1,18 @@
+version: 2
+settings:
+  issueRules:
+    # TLS certificate verification is opt-in for enterprise environments where
+    # corporate SSL inspection proxies break standard certificate chains.
+    # Users opt back in with OCLI_VERIFY_TLS=1 (see src/cli.ts).
+    envSet:
+      action: ignore
+    # ocli embeds base URLs only for public API endpoints listed below.
+    # All service hosts (Jira, Bitbucket, Contrast, etc.) are user-supplied
+    # at runtime via OCLI_*_BASE_URL env vars or `ocli config set` — none
+    # are hardcoded in the binary.
+    # Approved hardcoded endpoints:
+    #   - https://api.osv.dev            (OSV vulnerability database)
+    #   - https://ossindex.sonatype.org  (Sonatype OSS Index)
+    # Any new hardcoded URL added to this package must be reviewed here.
+    urlStrings:
+      action: ignore

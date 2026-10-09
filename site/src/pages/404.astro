@@ -1,0 +1,39 @@
+---
+import { Image } from 'astro:assets';
+import Base from '../layouts/Base.astro';
+import notFound from '../assets/404.png';
+---
+
+<Base title="404 — ocli" description="Page not found">
+  <section class="w-full flex flex-col items-center justify-center px-6 py-16 text-center">
+    <div class="w-56 h-56 md:w-64 md:h-64 rounded-full overflow-hidden border-[3px] border-ink/80 bg-panel shadow-[0_6px_0_rgb(0_0_0/0.35)] mb-8">
+      <Image
+        src={notFound}
+        alt="404 illustration"
+        width={320}
+        class="w-full h-full object-cover"
+      />
+    </div>
+    <p class="stamp text-coral mb-5">File not found — return to sender</p>
+    <h1 class="font-display headline-shadow text-4xl md:text-5xl font-black text-ink tracking-tight mb-4">
+      404 — Lost in the backlog
+    </h1>
+    <p class="text-ink/50 text-lg max-w-md leading-relaxed mb-8">
+      This page got lost somewhere between Jira and Bitbucket.
+    </p>
+    <div class="flex flex-wrap gap-4 justify-center">
+      <a
+        href="/ocli/"
+        class="btn-sticker bg-gold text-cream px-6 py-2.5"
+      >
+        ← Back home
+      </a>
+      <a
+        href="/ocli/changelog/"
+        class="btn-sticker bg-panel text-ink px-6 py-2.5"
+      >
+        Latest release →
+      </a>
+    </div>
+  </section>
+</Base>

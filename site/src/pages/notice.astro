@@ -1,0 +1,108 @@
+---
+// The compliance notice IS the real NOTICE file at the repo root — inlined at
+// build time (Vite ?raw import) so this page can never drift from what
+// actually ships in the repo and in every npm package (npm always includes a
+// root NOTICE file).
+import noticeText from '../../../NOTICE?raw';
+import Base from '../layouts/Base.astro';
+
+const raw = noticeText.replace(/\r\n/g, '\n');
+
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Palette for the rendered file — the NOTICE viewer is an always-dark terminal
+// widget, so these are the fixed terminal/on-dark colors, not the theme tokens.
+const CHROME = '#8a8f98'; // dividers, header metadata
+const GOLD = '#d9b84f'; // clause headers
+const STRAW = '#ece0a8'; // section titles + clause 21 header
+const CREAM = '#f2ead9'; // clause 21 body (the actual legal bit)
+
+const span = (text: string, color: string, bold = false) =>
+  `<span style="color:${color}${bold ? ';font-weight:700' : ''}">${text}</span>`;
+
+let seenFirstDivider = false;
+let inFinalClause = false;
+
+const html = raw
+  .split('\n')
+  .map((line) => {
+    const esc = escapeHtml(line);
+
+    // ═/= divider lines
+    if (/^[═=]{3,}\s*$/.test(line)) {
+      seenFirstDivider = true;
+      inFinalClause = false;
+      return span(esc, CHROME);
+    }
+    // Centered section titles
+    if (/^\s*(MANDATORY COMPLIANCE NOTICE|INDEPENDENT PROJECT NOTICE)\s*$/.test(line)) {
+      return span(esc, STRAW, true);
+    }
+    // Copyright/license header block before the first divider
+    if (!seenFirstDivider) {
+      return span(esc, CHROME);
+    }
+    // Numbered ALL-CAPS clause headers (e.g. "1. MANDATORY STAND-UP PARTICIPATION")
+    if (/^\d+\.\s+[A-Z][A-Z0-9 &'\-]*$/.test(line)) {
+      if (line.startsWith('21.')) {
+        inFinalClause = true;
+        return span(esc, STRAW, true);
+      }
+      return span(esc, GOLD, true);
+    }
+    // Clause 21 body — the one real obligation — emphasized in cream
+    if (inFinalClause) {
+      return span(esc, CREAM);
+    }
+    return esc;
+  })
+  .join('\n');
+---
+
+<Base
+  title="NOTICE — ocli"
+  description="MANDATORY COMPLIANCE NOTICE. All 21 clauses. You found it."
+>
+  <div class="max-w-3xl mx-auto px-6 py-10">
+    <!-- Easter egg badge -->
+    <div class="mb-6 flex items-center gap-3">
+      <span class="inline-flex items-center gap-1.5 rounded-full bg-gold/10 border border-gold/30 px-3 py-1 text-xs font-mono text-gold">
+        🥚 you found it
+      </span>
+      <span class="text-sm text-ink/40 font-mono">
+        /notice
+      </span>
+    </div>
+
+    <div class="mb-8">
+      <h1 class="text-3xl font-display headline-shadow font-black text-ink tracking-tight mb-2">
+        MANDATORY COMPLIANCE NOTICE
+      </h1>
+      <p class="text-ink/50 text-sm font-mono">
+        The actual NOTICE file, rendered live from the repository root. All 21 clauses.<br />
+        The real legal requirement is clause 21. Everything else is the point.
+      </p>
+    </div>
+
+    <div class="rounded-2xl border-[3px] border-ink/80 shadow-[0_6px_0_rgb(0_0_0/0.35)] bg-term text-on-dark-body font-mono text-sm leading-relaxed overflow-hidden">
+      <!-- File header bar -->
+      <div class="flex items-center gap-2 px-4 py-3 border-b border-term-border bg-term-panel">
+        <div class="flex gap-1.5">
+          <span class="w-3 h-3 rounded-full bg-coral/70"></span>
+          <span class="w-3 h-3 rounded-full bg-amber-400/60"></span>
+          <span class="w-3 h-3 rounded-full bg-green-400/60"></span>
+        </div>
+        <span class="text-term-muted text-xs ml-2">NOTICE</span>
+      </div>
+
+      <pre class="p-6 overflow-x-auto whitespace-pre-wrap break-words text-[0.8rem] leading-6"><code set:html={html} /></pre>
+    </div>
+
+    <!-- Footer attribution -->
+    <div class="mt-8 flex items-center justify-between text-xs font-mono text-ink/30">
+      <span>Ships with ocli — in the repo root and every npm package.</span>
+      <a href="/ocli/" class="hover:text-gold transition-colors">← back to the exit</a>
+    </div>
+  </div>
+</Base>

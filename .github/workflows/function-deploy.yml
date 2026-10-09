@@ -1,0 +1,68 @@
+name: Deploy feedback function
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'functions/**'
+      - 'infra/**'
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # required for OIDC login
+  contents: read
+  issues: read      # smoke test polls for the issue it creates
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Before any Azure call: a red unit test should not touch the resources.
+      - name: Test function
+        run: dotnet test functions/feedback.tests/Feedback.Tests.csproj -c Release
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Provision Azure resources
+        # provision.sh echoes FUNCAPP=... and RG=... to stdout;
+        # appending to $GITHUB_ENV makes them available in later steps.
+        env:
+          GITHUB_APP_ID: ${{ vars.IMAGILE_BOT_APP_ID }}
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+        run: bash infra/provision.sh >> "$GITHUB_ENV"
+
+      - name: Publish function
+        run: dotnet publish functions/feedback/Feedback.csproj -c Release -o ./publish
+
+      - name: Deploy to Azure Functions
+        uses: azure/functions-action@v1
+        with:
+          app-name: ${{ env.FUNCAPP }}
+          package:  ./publish
+
+      # A deploy that leaves the function empty (#424) or broken must fail this
+      # run, not wait for a user report. The script reads SMOKE-TEST-KEY from
+      # Key Vault with the OIDC login above — the CI principal has Key Vault
+      # Secrets User scoped to that one secret (infra/README.md §7) — submits a
+      # keyed report, and waits for it to become a closed `smoke-test` issue.
+      #
+      # SMOKE_SETTLE_SECONDS: right after a deploy the previous host instance can
+      # still hold the ProcessSubmissions singleton lease, so the first tick may
+      # run the build we just replaced (#431). Wait for the handover so the test
+      # exercises the code this run deployed.
+      - name: Smoke test (end to end)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_SETTLE_SECONDS: '150'
+        run: bash .claude/skills/feedback-smoke/smoke.sh

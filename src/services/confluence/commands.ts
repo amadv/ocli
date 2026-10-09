@@ -1,0 +1,445 @@
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import path from 'path';
+import { Command } from 'commander';
+import { ConfluenceClient } from './client.js';
+import { createHttpClient } from '../../lib/http.js';
+import { loadConfig } from '../../lib/config.js';
+import { success, fail } from '../../lib/output.js';
+import { OcliError } from '../../lib/errors.js';
+import { resolveTextInput } from '../../lib/input.js';
+
+/**
+ * When Confluence returns an XML parse error (HTTP 400 with "at [row,col]={R,C}"),
+ * extracts the offending line from the submitted body and returns a diagnostic hint.
+ * Returns null if the error doesn't match the pattern or the row is out of range.
+ */
+/**
+ * Resolves where a downloaded attachment is written.
+ *
+ * `title` comes from the Confluence API, so it is untrusted: without basename()
+ * a title like `../../.gitconfig` (or an absolute path) escapes `outDir` and
+ * writes anywhere the process can reach. Exported so that containment is
+ * directly testable — see commands.test.ts.
+ */
+export function resolveAttachmentPath(outDir: string, title: string): string {
+  // Split on both separators rather than path.basename(): on POSIX, basename()
+  // does not treat `\` as a separator, so a title from a Windows-hosted
+  // Confluence would survive intact as a literal `..\..\file` filename. Handling
+  // both makes containment independent of the platform ocli happens to run on.
+  const segments = title.split(/[\\/]/).filter(s => s !== '' && s !== '.' && s !== '..');
+  const name = segments.pop() ?? 'attachment';
+  return path.join(outDir, name);
+}
+
+export function xmlParseHint(err: unknown, bodyContent: string, convertedFromMarkdown = false): string | null {
+  if (!(err instanceof Error)) return null;
+  const m = err.message.match(/at \[row,col\]=\{(\d+),(\d+)\}/);
+  if (!m) return null;
+  const row = parseInt(m[1], 10);
+  const col = parseInt(m[2], 10);
+  const lines = bodyContent.split('\n');
+  const line = lines[row - 1];
+  if (!line) return null;
+  const pointer = ' '.repeat(Math.max(0, col - 1)) + '^';
+  const suffix = convertedFromMarkdown ? ' (converted from Markdown)' : '';
+  return `Offending line ${row}${suffix}: ${line}\n${pointer}`;
+}
+
+/**
+ * When Confluence returns HTTP 500 (often a NullPointerException from the Java
+ * server), scans the submitted body for known storage-format mistakes and returns
+ * actionable hints. Returns null if no known issues are detected or the error is
+ * not an HTTP 500.
+ */
+export function storageFormatHint(err: unknown, bodyContent: string): string | null {
+  if (!(err instanceof OcliError) || err.status !== 500) return null;
+  const hints: string[] = [];
+
+  // <ac:parameter name="..."> uses a bare attribute — Confluence requires the ac: prefix.
+  // Negative lookbehind excludes the valid form ac:name= (preceded by ':').
+  if (/<ac:parameter[^>]*(?<![:\w])name\s*=/i.test(bodyContent)) {
+    hints.push(
+      '<ac:parameter name="..."> found — use ac:name="..." instead ' +
+      '(e.g. <ac:parameter ac:name="language">text</ac:parameter>).'
+    );
+  }
+
+  // <ac:structured-macro> without ac:macro-id causes a NullPointerException on some
+  // Confluence versions. Each macro tag must carry a unique UUID in this attribute.
+  const macroTagRe = /<ac:structured-macro(?:\s[^>]*)?\s*>/gi;
+  let macroMatch: RegExpExecArray | null;
+  while ((macroMatch = macroTagRe.exec(bodyContent)) !== null) {
+    if (!/\bac:macro-id\b/.test(macroMatch[0])) {
+      hints.push(
+        '<ac:structured-macro> without ac:macro-id found — add a unique UUID: ' +
+        'ac:macro-id="<uuid>" (e.g. ac:macro-id="a1b2c3d4-...").'
+      );
+      break;
+    }
+  }
+
+  if (hints.length === 0) return null;
+  return `HTTP 500 — possible storage-format causes:\n${hints.map(h => `  • ${h}`).join('\n')}`;
+}
+
+function getClient(program: Command): ConfluenceClient {
+  const opts = program.optsWithGlobals();
+  const config = loadConfig({ configPath: opts.config });
+  if (!config.confluence.baseUrl) throw new OcliError('Confluence not configured. Run: ocli config init');
+  const http = createHttpClient(config, Boolean(opts.dryRun));
+  return new ConfluenceClient(http);
+}
+
+export function registerConfluenceCommands(program: Command): void {
+  const confluence = program.command('confluence').description('Confluence operations');
+
+  // ── Read ──────────────────────────────────────────────────────────────────
+
+  confluence.command('get-page')
+    .description('Get a Confluence page by ID')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .option('--expand <fields>', 'Comma-separated fields to expand', 'body.storage,version,space,ancestors')
+    .action(async (opts: { id: string; expand: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.getPage(opts.id, opts.expand);
+        success(data, 'confluence', 'get-page', start);
+      } catch (err) { fail(err, 'confluence', 'get-page', start); }
+    });
+
+  confluence.command('get-page-by-title')
+    .description('Find a Confluence page by space key and title')
+    .requiredOption('--space <key>', 'Space key')
+    .requiredOption('--title <title>', 'Page title')
+    .action(async (opts: { space: string; title: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.getPageByTitle(opts.space, opts.title);
+        if (!data) throw new OcliError(`Page not found: "${opts.title}" in space ${opts.space}`, 1);
+        success(data, 'confluence', 'get-page-by-title', start);
+      } catch (err) { fail(err, 'confluence', 'get-page-by-title', start); }
+    });
+
+  confluence.command('list-pages')
+    .description('List pages in a Confluence space (consider --output-file for large results)')
+    .requiredOption('--space <key>', 'Space key')
+    .option('--limit <n>', 'Max total pages to return (default: all)')
+    .option('--start <n>', 'Offset for first result')
+    .action(async (opts: { space: string; limit?: string; start?: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.listPages(opts.space, {
+          limit: opts.limit ? parseInt(opts.limit, 10) : undefined,
+          start: opts.start ? parseInt(opts.start, 10) : undefined
+        });
+        success(data, 'confluence', 'list-pages', start);
+      } catch (err) { fail(err, 'confluence', 'list-pages', start); }
+    });
+
+  confluence.command('get-page-children')
+    .description('Get child pages of a Confluence page')
+    .requiredOption('--id <page-id>', 'Parent page ID')
+    .action(async (opts: { id: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.getPageChildren(opts.id);
+        success(data, 'confluence', 'get-page-children', start);
+      } catch (err) { fail(err, 'confluence', 'get-page-children', start); }
+    });
+
+  confluence.command('get-labels')
+    .description('Get labels on a Confluence page')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .action(async (opts: { id: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.getLabels(opts.id);
+        success(data, 'confluence', 'get-labels', start);
+      } catch (err) { fail(err, 'confluence', 'get-labels', start); }
+    });
+
+  // ── Search ────────────────────────────────────────────────────────────────
+
+  confluence.command('search')
+    .description('Search Confluence with CQL')
+    .requiredOption('--cql <query>', 'CQL query string (e.g. "space=PROJ AND type=page")')
+    .option('--limit <n>', 'Maximum number of results', '25')
+    .option('--start <n>', 'Offset for first result', '0')
+    .option('--expand <fields>', 'Comma-separated fields to expand')
+    .action(async (opts: { cql: string; limit: string; start: string; expand?: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.search(opts.cql, {
+          limit: parseInt(opts.limit, 10),
+          start: parseInt(opts.start, 10),
+          expand: opts.expand
+        });
+        success(data, 'confluence', 'search', start);
+      } catch (err) { fail(err, 'confluence', 'search', start); }
+    });
+
+  // ── Write ─────────────────────────────────────────────────────────────────
+
+  confluence.command('create-page')
+    .description('Create a new Confluence page')
+    .requiredOption('--space <key>', 'Space key')
+    .requiredOption('--title <title>', 'Page title')
+    .option('--body <html>', 'Page body (storage format HTML or Markdown when --markdown is set)')
+    .option('--body-file <path>', "Path to a file containing the page body ('-' = stdin)")
+    .option('--markdown', 'Convert body from Markdown to storage format via Confluence API')
+    .option('--parent-id <id>', 'Parent page ID (to nest under a page)')
+    .option('--representation <format>', 'Body format: storage (default) or wiki', 'storage')
+    .action(async (opts: { space: string; title: string; body?: string; bodyFile?: string; markdown?: boolean; parentId?: string; representation: string }) => {
+      const start = Date.now();
+      let bodyContent: string | undefined;
+      try {
+        const client = getClient(program);
+        const rawBody = resolveTextInput(opts.body, opts.bodyFile, 'body');
+        if (rawBody === undefined) throw new OcliError('Must specify --body or --body-file', 1);
+        bodyContent = opts.markdown ? await client.convertToStorage(rawBody) : rawBody;
+        const representation = opts.markdown ? 'storage' : opts.representation;
+        const data = await client.createPage({
+          spaceKey: opts.space,
+          title: opts.title,
+          body: bodyContent,
+          parentId: opts.parentId,
+          representation
+        });
+        success(data, 'confluence', 'create-page', start);
+      } catch (err) {
+        const xmlHint = bodyContent ? xmlParseHint(err, bodyContent, Boolean(opts.markdown)) : null;
+        const sfHint = bodyContent ? storageFormatHint(err, bodyContent) : null;
+        const hint = [xmlHint, sfHint].filter(Boolean).join('\n\n') || null;
+        if (hint) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const status = err instanceof OcliError ? err.status : 1;
+          const url = err instanceof OcliError ? err.url : undefined;
+          fail(new OcliError(`${msg}\n\n${hint}`, status, url), 'confluence', 'create-page', start);
+        } else {
+          fail(err, 'confluence', 'create-page', start);
+        }
+      }
+    });
+
+  confluence.command('update-page')
+    .description('Update a Confluence page (fetches current version automatically)')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .option('--title <title>', 'New page title')
+    .option('--body <html>', 'New page body (storage format HTML or Markdown when --markdown is set)')
+    .option('--body-file <path>', "Path to a file containing the new page body ('-' = stdin)")
+    .option('--markdown', 'Convert body from Markdown to storage format via Confluence API')
+    .option('--status <status>', 'Page status: current (default) or draft', 'current')
+    .option('--representation <format>', 'Body format: storage (default) or wiki', 'storage')
+    .action(async (opts: { id: string; title?: string; body?: string; bodyFile?: string; markdown?: boolean; status: string; representation: string }) => {
+      const start = Date.now();
+      let bodyContent: string | undefined;
+      try {
+        const client = getClient(program);
+        const rawBody = resolveTextInput(opts.body, opts.bodyFile, 'body');
+        bodyContent = (rawBody !== undefined && opts.markdown)
+          ? await client.convertToStorage(rawBody)
+          : rawBody;
+        const representation = (bodyContent !== undefined && opts.markdown) ? 'storage' : opts.representation;
+        const current = await client.getPage(opts.id, 'version');
+        const nextVersion = current.version.number + 1;
+        const data = await client.updatePage(opts.id, {
+          version: nextVersion,
+          title: opts.title ?? current.title,
+          body: bodyContent,
+          status: opts.status,
+          representation
+        });
+        success(data, 'confluence', 'update-page', start);
+      } catch (err) {
+        const xmlHint = bodyContent ? xmlParseHint(err, bodyContent, Boolean(opts.markdown)) : null;
+        const sfHint = bodyContent ? storageFormatHint(err, bodyContent) : null;
+        const hint = [xmlHint, sfHint].filter(Boolean).join('\n\n') || null;
+        if (hint) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const status = err instanceof OcliError ? err.status : 1;
+          const url = err instanceof OcliError ? err.url : undefined;
+          fail(new OcliError(`${msg}\n\n${hint}`, status, url), 'confluence', 'update-page', start);
+        } else {
+          fail(err, 'confluence', 'update-page', start);
+        }
+      }
+    });
+
+  confluence.command('delete-page')
+    .description('Delete a Confluence page')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .action(async (opts: { id: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        await client.deletePage(opts.id);
+        success({ deleted: opts.id }, 'confluence', 'delete-page', start);
+      } catch (err) { fail(err, 'confluence', 'delete-page', start); }
+    });
+
+  // ── Comments ──────────────────────────────────────────────────────────────
+
+  confluence.command('list-comments')
+    .description('List comments on a Confluence page')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .action(async (opts: { id: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.listComments(opts.id);
+        success(data, 'confluence', 'list-comments', start);
+      } catch (err) { fail(err, 'confluence', 'list-comments', start); }
+    });
+
+  confluence.command('add-comment')
+    .description('Add a comment to a Confluence page')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .requiredOption('--body <text>', 'Comment body (storage format HTML)')
+    .option('--representation <format>', 'Body format: storage (default) or wiki', 'storage')
+    .action(async (opts: { id: string; body: string; representation: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.addComment(opts.id, opts.body, opts.representation);
+        success(data, 'confluence', 'add-comment', start);
+      } catch (err) { fail(err, 'confluence', 'add-comment', start); }
+    });
+
+  // ── Labels ────────────────────────────────────────────────────────────────
+
+  confluence.command('add-label')
+    .description('Add labels to a Confluence page')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .requiredOption('--labels <names>', 'Comma-separated label names')
+    .action(async (opts: { id: string; labels: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const labels = opts.labels.split(',').map(s => s.trim()).filter(Boolean);
+        const data = await client.addLabel(opts.id, labels);
+        success(data, 'confluence', 'add-label', start);
+      } catch (err) { fail(err, 'confluence', 'add-label', start); }
+    });
+
+  confluence.command('remove-label')
+    .description('Remove a label from a Confluence page')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .requiredOption('--label <name>', 'Label name to remove')
+    .action(async (opts: { id: string; label: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        await client.removeLabel(opts.id, opts.label);
+        success({ removed: opts.label, from: opts.id }, 'confluence', 'remove-label', start);
+      } catch (err) { fail(err, 'confluence', 'remove-label', start); }
+    });
+
+  // ── Spaces ────────────────────────────────────────────────────────────────
+
+  confluence.command('list-spaces')
+    .description('List Confluence spaces')
+    .option('--type <type>', 'Space type: global or personal')
+    .option('--limit <n>', 'Max total spaces to return (default: all)')
+    .action(async (opts: { type?: string; limit?: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.listSpaces({
+          type: opts.type,
+          limit: opts.limit ? parseInt(opts.limit, 10) : undefined
+        });
+        success(data, 'confluence', 'list-spaces', start);
+      } catch (err) { fail(err, 'confluence', 'list-spaces', start); }
+    });
+
+  confluence.command('get-space')
+    .description('Get a Confluence space by key')
+    .requiredOption('--key <space-key>', 'Space key')
+    .action(async (opts: { key: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.getSpace(opts.key);
+        success(data, 'confluence', 'get-space', start);
+      } catch (err) { fail(err, 'confluence', 'get-space', start); }
+    });
+
+  // ── Attachments ───────────────────────────────────────────────────────────
+
+  confluence.command('list-attachments')
+    .description('List attachments on a Confluence page')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .action(async (opts: { id: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.listAttachments(opts.id);
+        success(data, 'confluence', 'list-attachments', start);
+      } catch (err) { fail(err, 'confluence', 'list-attachments', start); }
+    });
+
+  confluence.command('upload-attachment')
+    .description('Upload a file as an attachment to a Confluence page')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .requiredOption('--file <path>', 'Path to the file to upload')
+    .option('--comment <text>', 'Optional comment to attach to the file version')
+    .action(async (opts: { id: string; file: string; comment?: string }) => {
+      const start = Date.now();
+      try {
+        if (!existsSync(opts.file)) throw new OcliError(`File not found: ${opts.file}`, 1);
+        const client = getClient(program);
+        const data = await client.uploadAttachment(opts.id, opts.file, opts.comment);
+        success(data, 'confluence', 'upload-attachment', start);
+      } catch (err) { fail(err, 'confluence', 'upload-attachment', start); }
+    });
+
+  confluence.command('download-attachment')
+    .description('Download a Confluence attachment to .ocli/ (or --dir)')
+    .requiredOption('--id <attachment-id>', 'Attachment content ID')
+    .option('--dir <path>', 'Output directory (default: .ocli relative to cwd)')
+    .action(async (opts: { id: string; dir?: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const attachment = await client.getAttachment(opts.id);
+        const outDir = opts.dir ?? path.join(process.cwd(), '.ocli');
+        mkdirSync(outDir, { recursive: true });
+        const outPath = resolveAttachmentPath(outDir, attachment.title);
+        const buffer = await client.downloadAttachment(attachment);
+        writeFileSync(outPath, buffer);
+        success({ saved: outPath, filename: attachment.title, size: buffer.length }, 'confluence', 'download-attachment', start);
+      } catch (err) { fail(err, 'confluence', 'download-attachment', start); }
+    });
+
+  confluence.command('delete-attachment')
+    .description('Delete an attachment from Confluence by its content ID (moves it to the trash; does not permanently purge it)')
+    .requiredOption('--id <attachment-id>', 'Attachment content ID')
+    .action(async (opts: { id: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        await client.deleteAttachment(opts.id);
+        success({ deleted: opts.id }, 'confluence', 'delete-attachment', start);
+      } catch (err) { fail(err, 'confluence', 'delete-attachment', start); }
+    });
+
+  // ── History ───────────────────────────────────────────────────────────────
+
+  confluence.command('get-page-history')
+    .description('Get the version history metadata for a Confluence page')
+    .requiredOption('--id <page-id>', 'Page ID')
+    .action(async (opts: { id: string }) => {
+      const start = Date.now();
+      try {
+        const client = getClient(program);
+        const data = await client.getPageHistory(opts.id);
+        success(data, 'confluence', 'get-page-history', start);
+      } catch (err) { fail(err, 'confluence', 'get-page-history', start); }
+    });
+}

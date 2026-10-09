@@ -1,0 +1,90 @@
+{
+  "name": "@amadv/ocli",
+  "version": "5.0.1",
+  "description": "The Office CLI — structured JSON access to Jira, Bitbucket, GitHub, Confluence, Azure DevOps, SonarQube, Jenkins, and more, built for AI coding agents. One command does what three meetings couldn't.",
+  "type": "module",
+  "bin": {
+    "ocli": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/cli.ts",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "sync-readme": "tsx scripts/sync-readme.ts"
+  },
+  "dependencies": {
+    "@inquirer/checkbox": "^5.2.1",
+    "@inquirer/confirm": "^6.0.13",
+    "@inquirer/input": "^5.0.13",
+    "@inquirer/password": "^5.0.13",
+    "@inquirer/select": "^5.1.5",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "undici": "^8.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@typescript-eslint/eslint-plugin": "^8.31.0",
+    "@typescript-eslint/parser": "^8.31.0",
+    "eslint": "^9.25.1",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "keywords": [
+    "cli",
+    "jira",
+    "bitbucket",
+    "developer-tools",
+    "code-review",
+    "agent",
+    "automation",
+    "ai-agent",
+    "agent-skills",
+    "skills",
+    "claude",
+    "claude-code",
+    "github-copilot",
+    "codex",
+    "github",
+    "confluence",
+    "azure-devops",
+    "sonarqube",
+    "jenkins",
+    "artifactory",
+    "checkmarx",
+    "sdelements",
+    "sonatype",
+    "contrast-security",
+    "openshift",
+    "kubernetes",
+    "dynatrace",
+    "logscale",
+    "figma",
+    "enterprise",
+    "json-cli"
+  ],
+  "homepage": "https://amadv.github.io/ocli/",
+  "bugs": {
+    "url": "https://github.com/amadv/ocli/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/amadv/ocli"
+  },
+  "license": "Apache-2.0",
+  "files": [
+    "dist",
+    "skills",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ]
+}
